@@ -9,7 +9,8 @@ build/
 .venv/
 venv/
 .env
-.python-version
+# Allow .python-version for Streamlit Cloud / local pin (3.12)
+# .python-version
 
 # ---- Jupyter / IDE ----
 .ipynb_checkpoints/

@@ -1,5 +1,5 @@
-# Root requirements for Streamlit Community Cloud
-# Main file: streamlit_app/app.py
+# Streamlit Community Cloud — pin Python 3.11 or 3.12 in Advanced settings.
+# TensorFlow has no wheels for Python 3.13/3.14 (Cloud may default to 3.14).
 streamlit>=1.28.0
 tensorflow==2.20.0
 numpy>=1.26.0,<2.3.0

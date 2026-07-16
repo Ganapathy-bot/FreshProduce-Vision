@@ -194,16 +194,33 @@ Stage → proxy days (see retrain script `DEFAULT_RSL_MAP`): Fresh≈7 … Spoil
 
 ## Deploy on Streamlit Community Cloud
 
+### Critical: Python version
+
+TensorFlow **does not install on Python 3.14** (Cloud’s default can be 3.14 → build fails with “no matching distribution / no wheels”).
+
+You **must** pick **Python 3.12** (or **3.11**) under **Advanced settings** when deploying.  
+Python version **cannot** be changed after the app is created — delete and redeploy if you already used 3.14.
+
+Repo pins:
+- `runtime.txt` → `python-3.12`
+- `.python-version` → `3.12`
+- `pyproject.toml` → `requires-python = ">=3.10,<3.13"`
+- `tensorflow==2.16.2` (wheels exist for 3.10–3.12)
+
+### Steps
+
 1. Push this repo (includes a small cloud inference bundle: Keras weights + `label_maps.json`).
-2. Open the deploy link (note the **forward slash** in the main file path):
+2. If a failed app already exists: **Manage app → Delete** it.
+3. Open the deploy link (note the **forward slash** in the main file path):
 
    [Deploy FreshProduce Vision](https://share.streamlit.io/deploy?repository=Ganapathy-bot/FreshProduce-Vision&branch=main&mainModule=streamlit_app/app.py)
 
-3. Sign in with GitHub → confirm:
+4. Sign in with GitHub → confirm:
    - **Repository:** `Ganapathy-bot/FreshProduce-Vision`
    - **Branch:** `main`
    - **Main file path:** `streamlit_app/app.py`  ← not `streamlit_app\app.py`
-4. Click **Deploy**. First build can take several minutes (TensorFlow install).
+5. Click **Advanced settings** → **Python version: 3.12** (or 3.11).
+6. Click **Deploy**. First build can take several minutes (TensorFlow install).
 
 App URL will look like: `https://freshproduce-vision-….streamlit.app`
 

@@ -1,7 +1,7 @@
 # Must match root requirements.txt
-# Select Python 3.12 (or 3.11) under Streamlit Cloud → Advanced settings.
+# Streamlit Cloud Advanced settings → Python 3.12 (NOT 3.14)
 streamlit>=1.28.0
-tensorflow==2.20.0
-numpy>=1.26.0,<2.3.0
+tensorflow==2.16.2
+numpy>=1.23.0,<2.1.0
 Pillow>=9.0.0
 pandas>=1.5.0

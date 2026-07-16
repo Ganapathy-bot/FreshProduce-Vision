@@ -13,8 +13,9 @@ Place model artifacts next to this file (or set MODEL_DIR):
   streamlit_model_bundle/
     label_maps.json
     run_config.json
-    savedmodel_efficientnetv2b0_multitask/   # full SavedModel folder
-    # optional: best_model_*.keras
+    model_multitask.onnx          # preferred (Streamlit Cloud — no TensorFlow)
+    onnx_meta.json
+    # optional local: best_model_*.keras / SavedModel (needs TensorFlow)
 """
 
 from __future__ import annotations
@@ -60,7 +61,6 @@ def find_savedmodel_dir(root: Path) -> Optional[Path]:
         d = pb.parent
         if (d / "variables").is_dir() or any(d.glob("variables*")):
             return d
-    # bare folder with pb only (incomplete) — still return for clear error later
     for pb in root.rglob("saved_model.pb"):
         return pb.parent
     return None
@@ -74,31 +74,28 @@ def find_keras_model(root: Path) -> Optional[Path]:
     return None
 
 
+def find_onnx_model(root: Path) -> Optional[Path]:
+    direct = root / "model_multitask.onnx"
+    if direct.is_file():
+        return direct
+    hits = sorted(root.rglob("*.onnx"))
+    return hits[0] if hits else None
+
+
+def preprocess_numpy_rgb255(arr: np.ndarray) -> np.ndarray:
+    """Keep RGB floats in [0, 255].
+
+    This project's EfficientNetV2 multitask model already includes Rescaling +
+    Normalization inside the graph (include_preprocessing). Feeding mode='tf'
+    [-1,1] double-preprocesses and hurts accuracy.
+    """
+    return arr.astype(np.float32, copy=False)
+
+
 def get_preprocess_fn(backbone: str):
-    name = (backbone or "efficientnetv2b0").lower()
-    if name == "efficientnetb3":
-        from tensorflow.keras.applications.efficientnet import preprocess_input
-        return preprocess_input
-    if name == "efficientnetv2b0":
-        from tensorflow.keras.applications.efficientnet_v2 import preprocess_input
-        return preprocess_input
-    if name == "densenet121":
-        from tensorflow.keras.applications.densenet import preprocess_input
-        return preprocess_input
-    if name == "mobilenetv3":
-        from tensorflow.keras.applications.mobilenet_v3 import preprocess_input
-        return preprocess_input
-    if name == "resnet50":
-        from tensorflow.keras.applications.resnet import preprocess_input
-        return preprocess_input
-    if name == "convnext_tiny":
-        try:
-            from tensorflow.keras.applications.convnext import preprocess_input
-            return preprocess_input
-        except Exception:
-            pass
-    from tensorflow.keras.applications.efficientnet_v2 import preprocess_input
-    return preprocess_input
+    """Pure NumPy preprocess — no TensorFlow required on Cloud."""
+    _ = backbone  # reserved if future backbones need different scaling
+    return preprocess_numpy_rgb255
 
 
 def preprocess_pil(img: Image.Image, img_size: Tuple[int, int], preprocess_fn) -> np.ndarray:
@@ -121,16 +118,16 @@ def topk(probs: np.ndarray, class_names: List[str], k: int = 5) -> List[Tuple[st
 # ---------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Loading model…")
 def load_artifacts(model_dir: str):
-    import tensorflow as tf
-
     root = Path(model_dir)
     if not root.exists():
         raise FileNotFoundError(f"MODEL_DIR not found: {root}")
 
     label_path = find_file("label_maps.json", root)
     config_path = find_file("run_config.json", root)
+    onnx_meta_path = find_file("onnx_meta.json", root)
     label_maps = json.loads(label_path.read_text(encoding="utf-8")) if label_path else {}
     run_config = json.loads(config_path.read_text(encoding="utf-8")) if config_path else {}
+    onnx_meta = json.loads(onnx_meta_path.read_text(encoding="utf-8")) if onnx_meta_path else {}
 
     img_size = tuple(label_maps.get("img_size") or run_config.get("img_size") or [224, 224])
     backbone = label_maps.get("backbone") or run_config.get("backbone") or "efficientnetv2b0"
@@ -150,49 +147,90 @@ def load_artifacts(model_dir: str):
 
     preprocess_fn = get_preprocess_fn(backbone)
 
-    # Prefer full Keras model if present (easier multi-output), else SavedModel
-    keras_path = find_keras_model(root)
-    saved_dir = find_savedmodel_dir(root)
-
     backend = None
     model = None
     serve_fn = None
     output_keys: List[str] = []
     input_key: Optional[str] = None
+    onnx_session = None
+    onnx_input_name: Optional[str] = None
+    onnx_output_map: Dict[str, str] = {}
 
-    if keras_path is not None:
-        model = tf.keras.models.load_model(str(keras_path), compile=False)
-        backend = "keras"
-        if isinstance(model.output, dict):
-            output_keys = list(model.output.keys())
-        elif getattr(model, "output_names", None):
-            output_keys = list(model.output_names)
-        else:
-            output_keys = ["output"]
-    elif saved_dir is not None:
-        if not (saved_dir / "variables").exists():
+    onnx_path = find_onnx_model(root)
+    keras_path = find_keras_model(root)
+    saved_dir = find_savedmodel_dir(root)
+
+    # ---- Preferred: ONNX Runtime (Streamlit Cloud friendly) ----
+    if onnx_path is not None:
+        import onnxruntime as ort
+
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        onnx_session = ort.InferenceSession(
+            str(onnx_path),
+            sess_options=so,
+            providers=["CPUExecutionProvider"],
+        )
+        backend = "onnx"
+        onnx_input_name = (
+            onnx_meta.get("input_name")
+            or onnx_session.get_inputs()[0].name
+        )
+        output_keys = list(
+            onnx_meta.get("output_names")
+            or [o.name for o in onnx_session.get_outputs()]
+        )
+        onnx_output_map = dict(onnx_meta.get("output_map") or {})
+        if not onnx_output_map:
+            # default semantic names = onnx names
+            onnx_output_map = {n: n for n in output_keys}
+        model = onnx_session
+
+    # ---- Optional: TensorFlow backends (local only) ----
+    elif keras_path is not None or saved_dir is not None:
+        try:
+            import tensorflow as tf
+        except ImportError as e:
             raise FileNotFoundError(
-                f"Incomplete SavedModel at {saved_dir}: missing variables/ folder. "
-                "Zip and download the full SavedModel directory, not only saved_model.pb."
-            )
-        loaded = tf.saved_model.load(str(saved_dir))
-        backend = "saved_model"
-        if not loaded.signatures:
-            # Keras 3 export sometimes exposes __call__
-            model = loaded
-            serve_fn = None
+                "No ONNX model found and TensorFlow is not installed. "
+                "Add model_multitask.onnx to streamlit_model_bundle/ "
+                "or install tensorflow for local .keras/SavedModel inference."
+            ) from e
+
+        if keras_path is not None:
+            model = tf.keras.models.load_model(str(keras_path), compile=False)
+            backend = "keras"
+            if isinstance(model.output, dict):
+                output_keys = list(model.output.keys())
+            elif getattr(model, "output_names", None):
+                output_keys = list(model.output_names)
+            else:
+                output_keys = ["output"]
         else:
-            sig_name = "serving_default" if "serving_default" in loaded.signatures else list(loaded.signatures.keys())[0]
-            serve_fn = loaded.signatures[sig_name]
-            # input name
-            spec = serve_fn.structured_input_signature[1]
-            input_key = list(spec.keys())[0]
-            output_keys = list(serve_fn.structured_outputs.keys())
-            model = loaded
+            if not (saved_dir / "variables").exists():
+                raise FileNotFoundError(
+                    f"Incomplete SavedModel at {saved_dir}: missing variables/ folder."
+                )
+            loaded = tf.saved_model.load(str(saved_dir))
+            backend = "saved_model"
+            if not loaded.signatures:
+                model = loaded
+                serve_fn = None
+            else:
+                sig_name = (
+                    "serving_default"
+                    if "serving_default" in loaded.signatures
+                    else list(loaded.signatures.keys())[0]
+                )
+                serve_fn = loaded.signatures[sig_name]
+                spec = serve_fn.structured_input_signature[1]
+                input_key = list(spec.keys())[0]
+                output_keys = list(serve_fn.structured_outputs.keys())
+                model = loaded
     else:
         raise FileNotFoundError(
-            f"No model found under {root}. Expected a SavedModel folder "
-            f"(saved_model.pb + variables/) or a .keras file."
+            f"No model found under {root}. Expected model_multitask.onnx "
+            f"(preferred), a .keras file, or a SavedModel folder."
         )
 
     meta = {
@@ -200,6 +238,7 @@ def load_artifacts(model_dir: str):
         "backend": backend,
         "keras_path": str(keras_path) if keras_path else None,
         "saved_dir": str(saved_dir) if saved_dir else None,
+        "onnx_path": str(onnx_path) if onnx_path else None,
         "img_size": img_size,
         "backbone": backbone,
         "task_mode": task_mode,
@@ -209,6 +248,8 @@ def load_artifacts(model_dir: str):
         "rsl_map": rsl_map,
         "output_keys": output_keys,
         "input_key": input_key,
+        "onnx_input_name": onnx_input_name,
+        "onnx_output_map": onnx_output_map,
         "label_maps_path": str(label_path) if label_path else None,
     }
     return model, serve_fn, preprocess_fn, meta
@@ -216,6 +257,23 @@ def load_artifacts(model_dir: str):
 
 def run_inference(batch: np.ndarray, model, serve_fn, meta: Dict[str, Any]) -> Dict[str, np.ndarray]:
     """Return dict of output_name -> probability vector (1D for single image batch[0])."""
+    if meta["backend"] == "onnx":
+        sess = model
+        in_name = meta["onnx_input_name"] or sess.get_inputs()[0].name
+        outs = sess.run(None, {in_name: batch.astype(np.float32)})
+        names = [o.name for o in sess.get_outputs()]
+        raw = {names[i]: np.asarray(outs[i][0]) for i in range(len(outs))}
+        # Normalize to semantic keys when possible
+        out_map = meta.get("onnx_output_map") or {}
+        if out_map:
+            # out_map is semantic -> onnx_name; invert for convenience
+            inv = {v: k for k, v in out_map.items()}
+            mapped = {}
+            for oname, vec in raw.items():
+                mapped[inv.get(oname, oname)] = vec
+            return mapped
+        return raw
+
     import tensorflow as tf
 
     x = tf.convert_to_tensor(batch)
@@ -229,13 +287,11 @@ def run_inference(batch: np.ndarray, model, serve_fn, meta: Dict[str, Any]) -> D
             return {keys[i]: np.asarray(preds[i][0]) for i in range(len(preds))}
         return {"output": np.asarray(preds[0])}
 
-    # SavedModel signature
     if serve_fn is not None:
         key = meta["input_key"]
         out = serve_fn(**{key: x})
         return {k: np.asarray(v[0]) for k, v in out.items()}
 
-    # Fallback: call module
     preds = model(x)
     if isinstance(preds, dict):
         return {k: np.asarray(v[0]) for k, v in preds.items()}
@@ -260,7 +316,6 @@ def resolve_rsl(freshness: str, rsl_map: Dict[str, Any]) -> Tuple[Optional[float
     """Return (days, known). Unknown stage names must NOT default to spoiled (0)."""
     if freshness in rsl_map:
         return float(rsl_map[freshness]), True
-    # case-insensitive fallback
     lower = {str(k).lower(): float(v) for k, v in rsl_map.items()}
     key = str(freshness).lower()
     if key in lower:
@@ -288,11 +343,8 @@ def decode_prediction(raw: Dict[str, np.ndarray], meta: Dict[str, Any]) -> Dict[
     }
 
     if cat_key and fr_key:
-        p_cat = raw[cat_key]
-        p_fr = raw[fr_key]
-        # Flatten vector outputs
-        p_cat = np.asarray(p_cat).reshape(-1)
-        p_fr = np.asarray(p_fr).reshape(-1)
+        p_cat = np.asarray(raw[cat_key]).reshape(-1)
+        p_fr = np.asarray(raw[fr_key]).reshape(-1)
         result["single_class_heads"] = len(p_cat) <= 1 or len(p_fr) <= 1
         ic = int(np.argmax(p_cat))
         ifr = int(np.argmax(p_fr))
@@ -317,7 +369,6 @@ def decode_prediction(raw: Dict[str, np.ndarray], meta: Dict[str, Any]) -> Dict[
             }
         )
     else:
-        # single head / combined
         key = comb_key or list(raw.keys())[0]
         p = np.asarray(raw[key]).reshape(-1)
         result["single_class_heads"] = len(p) <= 1
@@ -325,7 +376,6 @@ def decode_prediction(raw: Dict[str, np.ndarray], meta: Dict[str, Any]) -> Dict[
         names = comb_names if len(comb_names) == len(p) else fr_names if len(fr_names) == len(p) else cat_names
         label = names[i] if i < len(names) else f"class_{i}"
         conf = float(p[i])
-        # try split Produce_Stage
         if "_" in label:
             category, freshness = label.split("_", 1)
         else:
@@ -346,13 +396,11 @@ def decode_prediction(raw: Dict[str, np.ndarray], meta: Dict[str, Any]) -> Dict[
             }
         )
 
-    # Interpretation: confidence ≠ freshness quality.
-    # High confidence only means "model is sure about its class pick".
     if result["labels_broken"] or result["single_class_heads"]:
         result["interpretation"] = (
             "Model misconfigured — not a real freshness call. "
-            "This bundle has 1 class per head (always ~100% confidence) and/or broken labels "
-            "(`input`/`datasets`). Retrain with IMAGES_DIR pointing at your real `images/` folder."
+            "This bundle has 1 class per head and/or broken labels. "
+            "Retrain with IMAGES_DIR pointing at your real images/ folder."
         )
     elif not result["rsl_known"]:
         result["interpretation"] = (
@@ -406,15 +454,13 @@ with st.sidebar:
 streamlit_model_bundle/
   label_maps.json
   run_config.json
-  savedmodel_.../
-    saved_model.pb
-    variables/
+  model_multitask.onnx
+  onnx_meta.json
 ```
 """
     )
     st.markdown("Or set env `MODEL_DIR=/path/to/bundle`")
 
-# Load model
 try:
     model, serve_fn, preprocess_fn, meta = load_artifacts(model_dir_in)
 except Exception as e:
@@ -435,11 +481,9 @@ with st.sidebar:
     if labels_look_broken(meta):
         st.error(
             "**Broken model export.** Labels are wrong (`input`/`datasets` or only 1 class). "
-            "Confidence will always be ~100% and is **not** a freshness score. "
             "Retrain with `IMAGES_DIR` → your real `images/` folder, then re-export the bundle."
         )
 
-# ---- Image chooser ----
 st.subheader("1. Choose image(s)")
 col_up, col_cam = st.columns(2)
 with col_up:
@@ -470,7 +514,6 @@ st.subheader("2. Predictions")
 run = st.button("Predict shelf life", type="primary", use_container_width=True)
 
 if not run:
-    # preview only
     cols = st.columns(min(4, len(images)))
     for i, (name, im) in enumerate(images[:8]):
         with cols[i % len(cols)]:
@@ -478,7 +521,6 @@ if not run:
     st.caption("Click **Predict shelf life** to run the model.")
     st.stop()
 
-# ---- Predict ----
 for name, im in images:
     st.markdown("---")
     left, right = st.columns([1, 1.2])
@@ -498,10 +540,7 @@ for name, im in images:
         st.markdown(f"### Results — `{name}`")
         if pred.get("labels_broken") or pred.get("single_class_heads"):
             st.error(
-                "This prediction is **invalid**: the SavedModel has only **1 class** for category "
-                "and freshness, so confidence is always **100%** (softmax of a single logit). "
-                "Labels were exported as `input` / `datasets` (wrong training path). "
-                "Interpretation previously said “Spoiled” only because unknown stages defaulted to 0 days — fixed."
+                "This prediction is **invalid**: broken labels or single-class heads."
             )
 
         m1, m2, m3, m4 = st.columns(4)
@@ -515,8 +554,7 @@ for name, im in images:
         m4.metric("Confidence", f"{pred['confidence']*100:.1f}%")
         st.caption(
             "Confidence = how sure the model is about its **class pick**, "
-            "not how fresh the produce is. 100% + Spoiled means “sure it’s spoiled,” "
-            "not “100% fresh.”"
+            "not how fresh the produce is."
         )
 
         st.markdown(f"**Interpretation:** {pred['interpretation']}")
@@ -538,7 +576,6 @@ for name, im in images:
                 unsafe_allow_html=True,
             )
 
-        # Feature tables
         st.markdown("#### Probability features")
         t1, t2 = st.columns(2)
         with t1:
@@ -568,6 +605,7 @@ for name, im in images:
             st.json(
                 {
                     "mode": pred["mode"],
+                    "backend": meta["backend"],
                     "category": pred["category"],
                     "freshness_stage": pred["freshness_stage"],
                     "remaining_shelf_life_days": pred["remaining_shelf_life_days"],

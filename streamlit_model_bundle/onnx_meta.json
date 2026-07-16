@@ -1,0 +1,27 @@
+{
+  "onnx_file": "model_multitask.onnx",
+  "input_name": "input",
+  "input_shape": [
+    "unk__1404",
+    224,
+    224,
+    3
+  ],
+  "output_names": [
+    "category",
+    "freshness"
+  ],
+  "keras_output_names": [
+    "category",
+    "freshness"
+  ],
+  "preprocess": "passthrough_0_255",
+  "img_size": [
+    224,
+    224
+  ],
+  "output_map": {
+    "category": "category",
+    "freshness": "freshness"
+  }
+}

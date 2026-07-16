@@ -43,11 +43,13 @@ working_retrain/
 fingerprint.pb
 saved_model.pb
 
-# Streamlit Cloud needs a small inference bundle in-repo.
-# Track only JSON + one Keras file (~27MB). Ignore SavedModel tree.
+# Streamlit Cloud inference bundle (ONNX preferred — no TensorFlow on Cloud).
+# Track JSON + ONNX (+ optional Keras). Ignore SavedModel tree.
 streamlit_model_bundle/**
 !streamlit_model_bundle/label_maps.json
 !streamlit_model_bundle/run_config.json
+!streamlit_model_bundle/onnx_meta.json
+!streamlit_model_bundle/model_multitask.onnx
 !streamlit_model_bundle/best_model_efficientnetv2b0_multitask.keras
 
 

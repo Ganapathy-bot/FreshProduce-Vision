@@ -1,0 +1,57 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.python-version
+
+# ---- Jupyter / IDE ----
+.ipynb_checkpoints/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Streamlit ----
+.streamlit/secrets.toml
+
+# ---- Large data (do not push) ----
+images/
+images.zip
+images (2).zip
+*.zip
+
+# ---- Model weights / binaries (train locally; not in git) ----
+*.keras
+*.h5
+*.weights.h5
+*.pb
+*.onnx
+*.tflite
+streamlit_model_bundle/
+working/
+working_retrain/
+**/savedmodel_*/
+**/variables/
+fingerprint.pb
+saved_model.pb
+
+# Training caches
+/kaggle/
+.cache/
+
+# TensorBoard / logs
+logs/
+runs/
+*.log
+
+# Optional local secrets
+.env.*
+credentials.json

@@ -1,0 +1,7 @@
+# Root requirements for Streamlit Community Cloud
+# Main file: streamlit_app/app.py
+streamlit>=1.28.0
+tensorflow==2.16.2
+numpy>=1.23.0,<2.1.0
+Pillow>=9.0.0
+pandas>=1.5.0

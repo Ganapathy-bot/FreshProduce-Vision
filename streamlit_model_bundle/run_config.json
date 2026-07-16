@@ -1,0 +1,27 @@
+{
+  "seed": 42,
+  "backbone": "efficientnetv2b0",
+  "task_mode": "multitask",
+  "img_size": [
+    224,
+    224
+  ],
+  "batch_size": 16,
+  "epochs_head": 3,
+  "epochs_finetune": 2,
+  "max_per_combined": 120,
+  "num_categories": 13,
+  "num_freshness": 6,
+  "num_combined": 33,
+  "images_dir": "C:\\Users\\Asus\\Downloads\\FreshProduce-Vision_ImagePack_v1\\images",
+  "n_train": 2772,
+  "n_val": 594,
+  "n_test": 594,
+  "val_metrics": {
+    "category_accuracy": 0.9562289714813232,
+    "category_loss": 0.45284798741340637,
+    "freshness_accuracy": 0.9612794518470764,
+    "freshness_loss": 0.3466295301914215,
+    "loss": 0.8884649276733398
+  }
+}

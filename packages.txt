@@ -1,0 +1,2 @@
+# System packages for Streamlit Community Cloud (apt)
+libgomp1
